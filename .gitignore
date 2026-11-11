@@ -3,6 +3,7 @@ __pycache__/
 .claude/
 .vscode/
 .idea/
+.dev/
 
 # local working files, not part of the distribution
 test_data/

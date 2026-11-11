@@ -324,7 +324,9 @@ class EditDriftComposite:
                 m = _m(mask, i, dev, s.shape[-2:])
                 hard = torch.zeros(1, 1, *s.shape[-2:], device=dev) if m is None else (m > 0.5).float()
                 if float(hard.max()) == 0:
-                    imgs.append(_hwc(src)); alphas.append(hard[0, 0].cpu()); continue
+                    imgs.append(_hwc(src))
+                    alphas.append(hard[0, 0].cpu())
+                    continue
                 alpha = _blend.feather_alpha(hard, diag_px(*s.shape[-2:], feather)) * float(edit_opacity)
                 comp = _blend.composite(s, e, alpha, hard, mode=blend_mode)
                 if grain_match > 0:

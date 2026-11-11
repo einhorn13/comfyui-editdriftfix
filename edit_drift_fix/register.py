@@ -215,14 +215,20 @@ def _refine(level, p: torch.Tensor, hw, model: str, iters: int):
         if step > 0.25 * r_norm:  # absurd step -> damp
             d = d * (0.25 * r_norm / step)
         if model == "translation":
-            p[0, 2] += d[0]; p[1, 2] += d[1]
+            p[0, 2] += d[0]
+            p[1, 2] += d[1]
         elif model == "scale_shift":
-            p[0, 0] += d[0] / r_norm; p[1, 1] += d[1] / r_norm
-            p[0, 2] += d[2]; p[1, 2] += d[3]
+            p[0, 0] += d[0] / r_norm
+            p[1, 1] += d[1] / r_norm
+            p[0, 2] += d[2]
+            p[1, 2] += d[3]
         else:
-            p[0, 0] += d[0] / r_norm; p[1, 1] += d[0] / r_norm
-            p[0, 1] -= d[1] / r_norm; p[1, 0] += d[1] / r_norm
-            p[0, 2] += d[2]; p[1, 2] += d[3]
+            p[0, 0] += d[0] / r_norm
+            p[1, 1] += d[0] / r_norm
+            p[0, 1] -= d[1] / r_norm
+            p[1, 0] += d[1] / r_norm
+            p[0, 2] += d[2]
+            p[1, 2] += d[3]
         if step < 0.004:
             break
     return p, cond
@@ -354,7 +360,10 @@ def register(src_lin: torch.Tensor, edt_lin: torch.Tensor, exclude: torch.Tensor
     light_e = lightness(e_work)
     weight = valid.clone()
     b = 3
-    weight[..., :b, :] = 0; weight[..., -b:, :] = 0; weight[..., :, :b] = 0; weight[..., :, -b:] = 0
+    weight[..., :b, :] = 0
+    weight[..., -b:, :] = 0
+    weight[..., :, :b] = 0
+    weight[..., :, -b:] = 0
     if exclude is not None:
         ex = exclude if exclude.shape[-2:] == hw else F.interpolate(exclude, size=hw, mode="bilinear", align_corners=False)
         weight = weight * (1.0 - dilate((ex > 0.05).to(weight.dtype), max(2, round(0.004 * math.hypot(*hw)))))
@@ -390,7 +399,9 @@ def register(src_lin: torch.Tensor, edt_lin: torch.Tensor, exclude: torch.Tensor
         for dx, dy in _phase_seed(coarse, hw):
             if math.hypot(dx, dy) > max_shift or math.hypot(dx, dy) < 1.0:
                 continue
-            cand = identity.clone(); cand[0, 2] = dx; cand[1, 2] = dy
+            cand = identity.clone()
+            cand[0, 2] = dx
+            cand[1, 2] = dy
             c = _cost(coarse, cand, hw)
             if c < 0.93 * best_c:
                 start, best_c = cand, c
@@ -406,7 +417,8 @@ def register(src_lin: torch.Tensor, edt_lin: torch.Tensor, exclude: torch.Tensor
         if mdl in want:
             base = p_t if model == "auto" else start
             if mdl == "similarity" and init is not None and init.model != "similarity":
-                base = base.clone(); base[0, 0] = base[1, 1] = 0.5 * (base[0, 0] + base[1, 1])
+                base = base.clone()
+                base[0, 0] = base[1, 1] = 0.5 * (base[0, 0] + base[1, 1])
             p, conds[mdl] = run(base, mdl, lvls)
             cands[mdl] = (p, _cost(fine, p, hw))
 
