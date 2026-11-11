@@ -4,6 +4,24 @@ Helps you work with generative AI without introducing unwanted changes to the or
 
 Editing models (Qwen-Image-Edit, FLUX Kontext, FLUX.2 Klein, GPT-Image, Nano Banana) return a whole new picture. Even when you ask for one small change, the frame comes back slightly zoomed and shifted, the colours move, and fine detail is redrawn everywhere. Edit Drift Fix takes the original and the edit and returns the original with only the real change pasted in.
 
+One edit rarely looks broken. The damage shows when you keep editing, because every pass redraws the whole picture again. Below, the same ten prompts were applied twice: once feeding each model output into the next edit, and once with Edit Drift Fix after every edit.
+
+### Qwen-Image 2.1
+
+![Ten chained edits with Qwen-Image 2.1, step by step](docs/chain_qwen.webp)
+
+![Ten chained edits with Qwen-Image 2.1, with and without Edit Drift Fix](docs/chain_qwen.jpg)
+
+### GPT Image
+
+![Ten chained edits with GPT Image, step by step](docs/chain_gpt_image.webp)
+
+![Ten chained edits with GPT Image, with and without Edit Drift Fix](docs/chain_gpt_image.jpg)
+
+Full-quality videos: [Qwen-Image 2.1](docs/chain_qwen.mp4), [GPT Image](docs/chain_gpt_image.mp4).
+
+## A single edit, up close
+
 ![Adding a cat with FLUX.2 Klein: original, model edit, result, mask and difference maps](docs/example_cat.jpg)
 
 The bottom row shows the difference from the original, amplified 6 times. The raw model output differs everywhere. After Edit Drift Fix only the cat differs.
@@ -49,16 +67,6 @@ A ready graph is in [`example_workflows/edit_drift_fix_basic.json`](example_work
 | `custom` | your own values |
 
 Picking a preset fills the fields of the node. Changing any field by hand switches the preset to `custom`.
-
-## More examples
-
-Recolouring a small object with Qwen-Image, preset `spot_edit`. The mask covers 1% of the frame.
-
-![Recolouring a cup with Qwen-Image](docs/example_cup.jpg)
-
-Changing clothes with FLUX.2 Klein, preset `object_edit`. The model zoomed in by 2%, and the result is aligned back to the original.
-
-![Changing a coat to a denim jacket with FLUX.2 Klein](docs/example_jacket.jpg)
 
 ## Settings
 
@@ -108,6 +116,16 @@ After a run the node shows a one-line summary: motion model, drift in pixels, ma
 | Edit Drift Mask | change mask only |
 | Edit Drift Composite | compositing with a mask you supply |
 | Edit Drift Pad / Unpad | pads the image to the model grid (8/16/32/64) before generation, so the model does not resize it, and crops the padding afterwards |
+
+## More examples
+
+Recolouring a small object with Qwen-Image, preset `spot_edit`. The mask covers 1% of the frame.
+
+![Recolouring a cup with Qwen-Image](docs/example_cup.jpg)
+
+Changing clothes with FLUX.2 Klein, preset `object_edit`. The model zoomed in by 2%, and the result is aligned back to the original.
+
+![Changing a coat to a denim jacket with FLUX.2 Klein](docs/example_jacket.jpg)
 
 ## License
 

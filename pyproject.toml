@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-editdriftfix"
 description = "Paste an AI edit (Qwen-Image-Edit, FLUX Kontext / FLUX.2 Klein, GPT-Image, Nano Banana) back into the original without drift: aligns geometry and colour, finds the changed area, keeps every other pixel bit-exact."
-version = "0.1.0"
+version = "0.1.1"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = ["opencv-python"]

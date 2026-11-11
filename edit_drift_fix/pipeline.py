@@ -12,7 +12,7 @@ from . import color as _color
 from . import grain as _grain
 from .mask import MASK_MODES, detect_changes, finalize_mask, prepare_user_mask
 from .register import MODELS, Registration, is_identity, register, size_matrix, warp
-from .util import delta_e, diag_px, dilate, erode, linear_to_srgb, quantile, srgb_to_linear
+from .util import delta_e, diag_px, dilate, erode, linear_to_srgb, mask_bhw, quantile, srgb_to_linear, to_rgb01
 
 COLOR_MODES = ("off", "global", "global_plus_local")
 BLEND_MODES = ("multiband", "alpha")
@@ -282,11 +282,12 @@ def fix_batch(source: torch.Tensor, edited: torch.Tensor, edit_mask: torch.Tenso
 
     One source may serve several edits and vice versa (shorter batches repeat their last item).
     Returns (image [K,H,W,3], mask [K,H,W], aligned [K,H,W,3], report json str)."""
+    source, edited, edit_mask = to_rgb01(source), to_rgb01(edited), mask_bhw(edit_mask)
     n = max(source.shape[0], edited.shape[0])
     images, masks, aligned, reports = [], [], [], []
     for i in range(n):
-        src = source[min(i, source.shape[0] - 1)][..., :3]
-        edt = edited[min(i, edited.shape[0] - 1)][..., :3]
+        src = source[min(i, source.shape[0] - 1)]
+        edt = edited[min(i, edited.shape[0] - 1)]
         if src.shape[:2] != source[0].shape[:2]:
             raise ValueError("all source images in a batch must have the same size")
         m = None

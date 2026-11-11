@@ -153,6 +153,9 @@ def _hysteresis(weak: torch.Tensor, strong: torch.Tensor, min_area: int, like: t
         frac = strong_count / np.maximum(area, 1)
         # mostly-weak regions are repaint noise; a solidly changed region is an edit however small
         minor = keep & ((frac < weak_frac) | ((energy < rel_energy * top) & (frac < solid_frac)))
+        # the strongest region is the edit itself, however faint: an edit that only changes
+        # an expression must not be thrown away together with the repaint noise
+        minor[int(np.argmax(np.where(keep, energy, -1.0)))] = False
         if minor.any() and (keep & ~minor).any():
             # a weak region right next to the main edit is part of it (shadow, the far side of an occluder)
             r = max(2, int(round(0.03 * float(np.hypot(*w_np.shape)))))

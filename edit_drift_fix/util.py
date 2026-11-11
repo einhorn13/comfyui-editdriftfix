@@ -133,6 +133,31 @@ def erode(mask: torch.Tensor, radius: int) -> torch.Tensor:
     return 1.0 - dilate(1.0 - mask, radius)
 
 
+def to_rgb01(img: torch.Tensor) -> torch.Tensor:
+    """[..., C] image of any channel count -> finite 3-channel values in [0, 1].
+
+    In-range RGB input comes back with identical values, so the source stays bit-exact."""
+    c = img.shape[-1]
+    if c == 1 or c == 2:
+        img = img[..., :1].expand(*img.shape[:-1], 3)
+    elif c > 3:
+        img = img[..., :3]
+    return torch.nan_to_num(img.float(), nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+
+
+def mask_bhw(mask: torch.Tensor | None) -> torch.Tensor | None:
+    """Mask given as [H,W], [B,H,W], [B,1,H,W] or [B,H,W,1] -> finite [B,H,W]."""
+    if mask is None:
+        return None
+    if mask.dim() == 2:
+        mask = mask[None]
+    elif mask.dim() == 4:
+        mask = mask[:, 0] if mask.shape[1] == 1 else mask[..., 0]
+    if mask.dim() != 3 or mask.numel() == 0:
+        return None
+    return torch.nan_to_num(mask.float(), nan=0.0, posinf=1.0, neginf=0.0)
+
+
 def diag_px(h: int, w: int, percent: float) -> float:
     """Convert '% of image diagonal' into pixels."""
     return float(percent) * 0.01 * math.hypot(h, w)

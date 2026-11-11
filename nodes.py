@@ -12,7 +12,7 @@ from .edit_drift_fix import grain as _grain
 from .edit_drift_fix.mask import MASK_MODES, detect_changes, prepare_user_mask
 from .edit_drift_fix.pipeline import (BLEND_MODES, COLOR_MODES, GLOBAL_POLICIES, PRESET_NAMES, fix_batch, settings_from)
 from .edit_drift_fix.register import MODELS, is_identity, register, warp
-from .edit_drift_fix.util import diag_px, dilate, erode, linear_to_srgb, srgb_to_linear
+from .edit_drift_fix.util import diag_px, dilate, erode, linear_to_srgb, mask_bhw, srgb_to_linear, to_rgb01
 
 CATEGORY = "image/Edit Drift Fix"
 
@@ -45,10 +45,11 @@ def _run(fn):
 
 
 def _chw(img: torch.Tensor, i: int, dev) -> torch.Tensor:
-    return img[min(i, img.shape[0] - 1)][..., :3].to(device=dev, dtype=torch.float32).permute(2, 0, 1)[None].contiguous()
+    return to_rgb01(img[min(i, img.shape[0] - 1)]).to(device=dev, dtype=torch.float32).permute(2, 0, 1)[None].contiguous()
 
 
 def _m(mask: torch.Tensor | None, i: int, dev, hw) -> torch.Tensor | None:
+    mask = mask_bhw(mask)
     if mask is None:
         return None
     return prepare_user_mask(mask[min(i, mask.shape[0] - 1)].to(device=dev, dtype=torch.float32)[None, None], hw)
@@ -394,6 +395,8 @@ class EditDriftUnpad:
         fx = w / (pad["width"] + pad["left"] + pad["right"])
         y0, x0 = round(pad["top"] * fy), round(pad["left"] * fx)
         y1, x1 = h - round(pad["bottom"] * fy), w - round(pad["right"] * fx)
+        y0, x0 = min(y0, h - 1), min(x0, w - 1)          # never return an empty image
+        y1, x1 = max(y1, y0 + 1), max(x1, x0 + 1)
         return (image[:, y0:y1, x0:x1, :],)
 
 
