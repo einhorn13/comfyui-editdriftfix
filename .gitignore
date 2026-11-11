@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.claude/
+.vscode/
+.idea/
+
+# local working files, not part of the distribution
+test_data/
+tests
+edit-drift-fix-node-brief.md
