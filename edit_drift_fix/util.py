@@ -15,10 +15,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-try:  # OpenCV ships with ComfyUI; only morphology helpers need it.
+try:  # connected components and distance transforms
     import cv2
-except Exception:  # pragma: no cover
-    cv2 = None
+except Exception as e:  # pragma: no cover
+    raise ImportError("Edit Drift Fix needs OpenCV (cv2), which could not be imported. "
+                      "Install it into the Python that runs ComfyUI: pip install opencv-python") from e
 
 
 # ----------------------------------------------------------------------------
@@ -183,15 +184,12 @@ def dilate(mask: torch.Tensor, radius: int) -> torch.Tensor:
         return mask
     if radius <= _EXACT_DISK_MAX:
         rows: dict[int, torch.Tensor] = {}
-        out = None
+        out = mask.clone()
         for dy in range(-radius, radius + 1):
             half = int(math.floor(math.sqrt(radius * radius - dy * dy) + 1e-9))
             if half not in rows:
                 rows[half] = F.max_pool2d(mask, (1, 2 * half + 1), stride=1, padding=(0, half)) if half else mask
-            if out is None:
-                out = rows[half].clone()
-            else:   # a vertical shift never needs pixels from outside the frame: exact
-                _max_into(out, rows[half], dy, 0)
+            _max_into(out, rows[half], dy, 0)   # a vertical shift never needs pixels from outside the frame
         return out
     # pad with a neutral value so segment sums that pass outside the frame are not clipped
     a, b, c = _segment_steps(radius)

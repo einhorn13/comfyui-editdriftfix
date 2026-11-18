@@ -66,7 +66,7 @@ A ready graph is in [`example_workflows/edit_drift_fix_basic.json`](example_work
 | `full_image` | the whole frame changed (style, relight). Geometry is aligned, nothing is pasted |
 | `custom` | your own values |
 
-Picking a preset fills the fields of the node. Changing any field by hand switches the preset to `custom`.
+Picking a preset fills the fields of the node. Changing any field by hand switches the preset to `custom`. While a preset is selected it decides these fields, so a value that arrives through a link or an API prompt is not used, and the report says so. Switch to `custom` to drive the fields from outside.
 
 ## Settings
 

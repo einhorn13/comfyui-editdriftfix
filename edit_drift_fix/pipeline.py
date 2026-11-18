@@ -230,7 +230,10 @@ def fix_pair(source: torch.Tensor, edited: torch.Tensor, user_mask: torch.Tensor
     for k in ("holdout_error_identity", "holdout_error_model"):
         if isinstance(color_info.get(k), float):
             color_info[k] = round(color_info[k], 5)
-    color_info.update(background_delta_e_before=_r(de_before), background_delta_e_after=_r(de_after))
+    de_bg = delta_e(src_lin, corrected)[bg > 0.5]
+    de_p95 = quantile(de_bg, 0.95) if de_bg.numel() >= 64 else None      # how far this pair's own repaint noise reaches
+    color_info.update(background_delta_e_before=_r(de_before), background_delta_e_after=_r(de_after),
+                      background_delta_e_p95=_r(de_p95))
 
     # ---- 5. final mask ------------------------------------------------------
     hard, mode = finalize_mask(core, user, mode, valid, expand_px)
@@ -280,8 +283,9 @@ def fix_pair(source: torch.Tensor, edited: torch.Tensor, user_mask: torch.Tensor
         elif res_work is not None and res_work > 0.3:
             conf *= 0.85
     if ring_p95 is not None and mode != "whole_image":
-        # judged against this pair's own background noise, not an absolute number
-        if ring_p95 > max(6.0, 4.0 * de_after):
+        # judged against this pair's own background noise, not an absolute number: its mean, and how
+        # far its tail reaches (models that re-render the frame at 4+ MP repaint foliage and hair hard)
+        if ring_p95 > max(6.0, 4.0 * de_after, 1.5 * (de_p95 or 0.0)):
             conf *= 0.7
             warnings.append(f"the edit differs from the source right next to the mask (dE p95 {ring_p95:.1f}): "
                             "the mask may be too tight - raise mask_expand or sensitivity")
