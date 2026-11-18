@@ -8,6 +8,7 @@ The core has no dependency on ComfyUI.
 """
 from __future__ import annotations
 
+import functools
 import math
 
 import numpy as np
@@ -115,18 +116,93 @@ def sobel_mag(gray: torch.Tensor) -> torch.Tensor:
     return torch.sqrt(gx * gx + gy * gy + 1e-12)
 
 
+_EXACT_DISK_MAX = 8     # up to this radius the disk is built row by row (exact)
+# Line directions (dy, dx) in three length groups: axis, diagonal, knight's move. The Minkowski
+# sum of symmetric segments along them is a 16-gon that stays within ~2 % of a disk.
+_DIR_GROUPS = (((0, 1), (1, 0)), ((1, 1), (1, -1)), ((1, 2), (2, 1), (1, -2), (2, -1)))
+
+
+@functools.lru_cache(maxsize=1024)
+def _segment_steps(radius: int) -> tuple[int, int, int]:
+    """Half-lengths (in steps) of the segments per direction group for a disk of `radius`.
+
+    Chosen so that the support function of the zonogon (its half-width in every direction)
+    deviates least from `radius`."""
+    phi = np.linspace(0.0, math.pi, 181)
+    u = np.stack([np.sin(phi), np.cos(phi)], 1)           # (dy, dx) unit vectors
+    sup = [sum(np.abs(u @ np.array(v, dtype=np.float64)) for v in g) for g in _DIR_GROUPS]
+    # equal Euclidean half-length L on all 8 directions: support ~ L * 16 / pi
+    base = radius * math.pi / 16.0
+    est = [base, base / math.sqrt(2.0), base / math.sqrt(5.0)]
+    best, best_err = (radius, 0, 0), float("inf")
+    for a in range(max(0, round(est[0]) - 2), round(est[0]) + 3):
+        for b in range(max(0, round(est[1]) - 2), round(est[1]) + 3):
+            for c in range(max(0, round(est[2]) - 2), round(est[2]) + 3):
+                if a == 0:          # the axis segments fill the gaps between the longer steps
+                    continue
+                err = float(np.abs(a * sup[0] + b * sup[1] + c * sup[2] - radius).max())
+                if err < best_err - 1e-9:
+                    best, best_err = (a, b, c), err
+    return best
+
+
+def _max_into(out: torch.Tensor, x: torch.Tensor, dy: int, dx: int) -> None:
+    """out = max(out, x translated by (dy, dx)) in place; pixels from outside the frame are ignored."""
+    h, w = x.shape[-2:]
+    if abs(dy) >= h or abs(dx) >= w:
+        return
+    dst = out[..., max(0, dy):h + min(0, dy), max(0, dx):w + min(0, dx)]
+    torch.maximum(dst, x[..., max(0, -dy):h - max(0, dy), max(0, -dx):w - max(0, dx)], out=dst)
+
+
+def _shift_max(x: torch.Tensor, dy: int, dx: int) -> torch.Tensor:
+    """max(x, x translated by (dy, dx))."""
+    out = x.clone()
+    _max_into(out, x, dy, dx)
+    return out
+
+
+def _segment(x: torch.Tensor, v: tuple[int, int], steps: int) -> torch.Tensor:
+    """Dilation by the symmetric segment {-steps..steps} * v, in O(log steps) shifts."""
+    k = 0
+    while k < steps:
+        j = min(k + 1, steps - k)      # {-k..k} -> {-(k+j)..k+j} without gaps
+        x = _shift_max(_shift_max(x, j * v[0], j * v[1]), -j * v[0], -j * v[1])
+        k += j
+    return x
+
+
 def dilate(mask: torch.Tensor, radius: int) -> torch.Tensor:
-    """Approximately round dilation of a (1,1,H,W) mask by `radius` px."""
+    """Round (disk-shaped) grey-scale dilation of a (..., H, W) mask by `radius` px.
+
+    Small radii use the exact digital disk (one 1-D max-pool per row width); larger ones the
+    Minkowski sum of line segments in 8 directions (a 16-gon), O(log radius) cheap shifts per
+    direction, so radii of several hundred px on 16 MP masks stay fast on the GPU."""
     radius = int(round(radius))
     if radius <= 0:
         return mask
-    out = mask
-    left = radius
-    while left > 0:  # small square/cross steps alternate -> octagon, cheap on GPU
-        s = min(left, 3)
-        out = F.max_pool2d(out, 2 * s + 1, stride=1, padding=s)
-        left -= s
-    return out
+    if radius <= _EXACT_DISK_MAX:
+        rows: dict[int, torch.Tensor] = {}
+        out = None
+        for dy in range(-radius, radius + 1):
+            half = int(math.floor(math.sqrt(radius * radius - dy * dy) + 1e-9))
+            if half not in rows:
+                rows[half] = F.max_pool2d(mask, (1, 2 * half + 1), stride=1, padding=(0, half)) if half else mask
+            if out is None:
+                out = rows[half].clone()
+            else:   # a vertical shift never needs pixels from outside the frame: exact
+                _max_into(out, rows[half], dy, 0)
+        return out
+    # pad with a neutral value so segment sums that pass outside the frame are not clipped
+    a, b, c = _segment_steps(radius)
+    pad = a + 2 * b + 6 * c + 1
+    lo = float(mask.min())
+    out = F.pad(mask, (pad, pad, pad, pad), value=lo)
+    for g, steps in zip(_DIR_GROUPS, (a, b, c)):
+        if steps:
+            for v in g:
+                out = _segment(out, v, steps)
+    return out[..., pad:-pad, pad:-pad].contiguous()
 
 
 def erode(mask: torch.Tensor, radius: int) -> torch.Tensor:

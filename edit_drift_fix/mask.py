@@ -161,7 +161,13 @@ def _hysteresis(weak: torch.Tensor, strong: torch.Tensor, min_area: int, like: t
             r = max(2, int(round(0.03 * float(np.hypot(*w_np.shape)))))
             near = cv2.distanceTransform(1 - (keep & ~minor)[labels].astype(np.uint8), cv2.DIST_L2, 3) <= r
             touching = np.bincount(flat, weights=near.ravel().astype(np.float64), minlength=n) > 0
-            minor &= ~touching
+            # ...unless it looks like the repaint noise this very pair shows elsewhere: the minor
+            # regions far from the edit are pure noise, and a near region with no more strong
+            # evidence than the most convincing of them is noise that merely happens to be close
+            # (foliage or brick next to the edit). Without far noise every near region is kept.
+            far = minor & ~touching
+            noise_frac = float(frac[far].max()) if far.any() else -1.0
+            minor &= ~(touching & (frac > noise_frac))
         if info is not None:
             info["dropped_minor_regions"] = int(minor.sum())
             info["dropped_minor_area"] = round(float(area[minor].sum() / flat.size), 5)
