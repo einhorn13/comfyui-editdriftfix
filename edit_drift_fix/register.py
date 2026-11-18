@@ -25,6 +25,7 @@ from .util import dilate, gaussian_blur, lightness, sobel_mag
 
 MAX_SCALE_DEV = 0.15      # |scale - 1| limit of the residual transform
 MAX_ROT_DEG = 3.0
+WORK_LONG = 1536          # registration works on a copy with this long side; accuracy is relative to it
 MODELS = ("auto", "translation", "scale_shift", "similarity", "none")
 
 
@@ -200,8 +201,8 @@ def _refine(level, p: torch.Tensor, hw, model: str, iters: int):
             cols = [(ex * u + ey * v) / r_norm, (ey * u - ex * v) / r_norm, ex, ey]
         j = torch.stack([c.reshape(-1) for c in cols], 1)
         jw = j * w.reshape(-1, 1)
-        a = (jw.T @ j).double().cpu()
-        b = (jw.T @ r.reshape(-1, 1)).double().cpu()[:, 0]
+        a = (jw.T @ j).cpu().double()                      # to the CPU first: MPS has no float64
+        b = (jw.T @ r.reshape(-1, 1)).cpu().double()[:, 0]
         ev = torch.linalg.eigvalsh(a)
         cond = float(ev[0] / (ev[-1] + 1e-30))
         a = a + torch.eye(a.shape[0], dtype=torch.float64) * (1e-6 * float(ev[-1]) + 1e-12)
@@ -280,7 +281,7 @@ def _residual_shift(level, p, hw, grid=8):
     r = g * ew - s
     ex, ey = g * ex, g * ey
     maps = torch.stack([w * ex * ex, w * ex * ey, w * ey * ey, w * ex * r, w * ey * r, w])[None]
-    pooled = F.adaptive_avg_pool2d(maps, (grid, grid))[0].reshape(6, -1).double().cpu()
+    pooled = F.adaptive_avg_pool2d(maps, (grid, grid))[0].reshape(6, -1).cpu().double()
     axx, axy, ayy, bx, by, cov = pooled
     det = axx * ayy - axy * axy
     tr = axx + ayy
@@ -318,7 +319,7 @@ def _pick_size_fit(src_light_small, edt_lin, src_hw):
 
 def register(src_lin: torch.Tensor, edt_lin: torch.Tensor, exclude: torch.Tensor | None = None,
              model: str = "auto", max_shift_pct: float = 5.0, init: Registration | None = None,
-             work_long: int = 1536) -> Registration:
+             work_long: int = WORK_LONG) -> Registration:
     """Estimate the source->edited mapping.
 
     exclude : (1,1,H,W) mask in source space, 1 = do not use these pixels (edit zone)

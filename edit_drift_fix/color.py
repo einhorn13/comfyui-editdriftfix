@@ -95,15 +95,17 @@ def _irls(X, Y, beta0, iters=6, ridge=3e-4):
     dt = X.dtype
     XX = X.unsqueeze(3) * X.unsqueeze(2)       # (N,3,k,k); elementwise sums beat a long-K GEMM on GPU
     XY = X * Y.unsqueeze(2)                    # (N,3,k)
-    b0 = beta0.double()
-    eye = torch.eye(X.shape[2], dtype=torch.float64, device=X.device)
+    acc = torch.float32 if X.device.type == "mps" else torch.float64    # MPS has no float64
+    b0 = beta0.cpu().double()
+    eye = torch.eye(X.shape[2], dtype=torch.float64)
     wts = torch.ones_like(Y)
     beta = beta0
     for _ in range(iters):
-        lam = (ridge * wts.sum(0, dtype=torch.float64)).view(3, 1, 1)
-        A = (XX * wts[:, :, None, None]).sum(0, dtype=torch.float64) + lam * eye
-        r = (XY * wts[:, :, None]).sum(0, dtype=torch.float64) + lam[:, :, 0] * b0
-        beta = torch.linalg.solve(A, r).to(dt)
+        # sums are accumulated on the device, the tiny 3 x k x k systems are solved on the CPU in float64
+        lam = (ridge * wts.sum(0, dtype=acc)).cpu().double().view(3, 1, 1)
+        A = (XX * wts[:, :, None, None]).sum(0, dtype=acc).cpu().double() + lam * eye
+        r = (XY * wts[:, :, None]).sum(0, dtype=acc).cpu().double() + lam[:, :, 0] * b0
+        beta = torch.linalg.solve(A, r).to(device=X.device, dtype=dt)
         res = Y - (X * beta).sum(2)
         scale = 1.4826 * (res - res.median(0).values).abs().median(0).values
         delta = (1.345 * scale).clamp_min(1e-4)

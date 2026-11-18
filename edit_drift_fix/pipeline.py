@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 
 import torch
 
@@ -11,7 +11,7 @@ from . import blend as _blend
 from . import color as _color
 from . import grain as _grain
 from .mask import MASK_MODES, detect_changes, finalize_mask, prepare_user_mask
-from .register import MODELS, Registration, is_identity, register, size_matrix, warp
+from .register import MODELS, WORK_LONG, Registration, is_identity, register, size_matrix, warp
 from .util import delta_e, diag_px, dilate, erode, linear_to_srgb, mask_bhw, quantile, srgb_to_linear, to_rgb01
 
 COLOR_MODES = ("off", "global", "global_plus_local")
@@ -39,6 +39,7 @@ class Settings:
     global_threshold: float = 40.0  # % of the frame; a bigger auto mask means "global edit"
     min_region: float = 0.02        # % of the frame; smaller changed spots are ignored
     seed: int = 0
+    notes: list = field(default_factory=list)   # warnings about the settings themselves, shown in the report
 
     def validated(self) -> "Settings":
         s = Settings(**asdict(self))
@@ -81,14 +82,39 @@ def apply_preset(settings: Settings, preset: str) -> Settings:
     return settings
 
 
+def _same_value(a, b) -> bool:
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) < 1e-6
+    return a == b
+
+
 def settings_from(preset: str = "custom", options: dict | None = None, **main) -> Settings:
-    names = {f.name for f in fields(Settings)}
+    """Settings of the main node: a preset other than `custom` decides the main controls.
+
+    In the UI the widgets always show the preset values. Values that arrive another way (a link
+    into a widget, an API prompt) and disagree with the preset are not used; this is reported."""
+    names = {f.name for f in fields(Settings)} - {"notes"}
     s = Settings(**{k: v for k, v in main.items() if k in names})
+    if preset in PRESETS:
+        lost = [f"{k}={main[k]!r}" for k, v in PRESETS[preset].items() if k in main and not _same_value(main[k], v)]
+        if lost:
+            s.notes.append(f"preset {preset!r} is in charge, so {', '.join(lost)} "
+                           f"{'was' if len(lost) == 1 else 'were'} not used: set preset to custom to use your values")
     apply_preset(s, preset)
     for k, v in (options or {}).items():
         if k in names:
             setattr(s, k, v)
     return s.validated()
+
+
+def _frame_shift(a: torch.Tensor, b: torch.Tensor, hw) -> float:
+    """Largest difference between two source->edited mappings over the frame, in source pixels."""
+    h, w = hw
+    pts = torch.tensor([[0.0, w - 1.0, 0.0, w - 1.0], [0.0, 0.0, h - 1.0, h - 1.0], [1.0, 1.0, 1.0, 1.0]],
+                       dtype=torch.float64)
+    d = (a.double() - b.double())[:2] @ pts                      # edited pixels at the four corners
+    scale = math.sqrt(abs(float(a[0, 0] * a[1, 1] - a[0, 1] * a[1, 0])))
+    return float(d.norm(dim=0).max()) / max(scale, 1e-6)
 
 
 # ----------------------------------------------------------------------------
@@ -118,7 +144,7 @@ def fix_pair(source: torch.Tensor, edited: torch.Tensor, user_mask: torch.Tensor
     Returns (image (1,3,H,W) sRGB, alpha (1,1,H,W), aligned edit (1,3,H,W) sRGB, report dict)."""
     s = (settings or Settings()).validated()
     h, w = source.shape[-2:]
-    warnings: list[str] = []
+    warnings: list[str] = list(s.notes)
     src_lin = srgb_to_linear(source)
     edt_lin = srgb_to_linear(edited)
     user = prepare_user_mask(user_mask, (h, w))
@@ -150,7 +176,7 @@ def fix_pair(source: torch.Tensor, edited: torch.Tensor, user_mask: torch.Tensor
             excl = dilate(core, margin) if hint is None else torch.maximum(dilate(core, margin), (hint > 0.05).float())
             reg2 = register(src_lin, edt_lin, exclude=excl, model=s.motion_model, max_shift_pct=s.max_shift, init=reg)
             passes = 2
-            moved = float((reg2.matrix - reg.matrix).abs()[:2].max() * max(h, w))  # crude px bound
+            moved = _frame_shift(reg2.matrix, reg.matrix, (h, w))
             reg = reg2
             if moved > 0.03:
                 aligned, valid = _align(src_lin, edt_lin, reg)
@@ -165,7 +191,7 @@ def fix_pair(source: torch.Tensor, edited: torch.Tensor, user_mask: torch.Tensor
         "registration": {"model": reg.model, "passes": passes,
                          **{k: reg.info.get(k) for k in ("size_fit", "size_scale", "scale", "shift_px", "rotation_deg",
                                                          "max_displacement_px", "residual_shift_px", "background_fraction")}},
-        "settings": asdict(s),
+        "settings": {k: v for k, v in asdict(s).items() if k != "notes"},
     }
 
     # ---- 3. global edit: nothing trustworthy to paste into ------------------
@@ -204,7 +230,10 @@ def fix_pair(source: torch.Tensor, edited: torch.Tensor, user_mask: torch.Tensor
     for k in ("holdout_error_identity", "holdout_error_model"):
         if isinstance(color_info.get(k), float):
             color_info[k] = round(color_info[k], 5)
-    color_info.update(background_delta_e_before=_r(de_before), background_delta_e_after=_r(de_after))
+    de_bg = delta_e(src_lin, corrected)[bg > 0.5]
+    de_p95 = quantile(de_bg, 0.95) if de_bg.numel() >= 64 else None      # how far this pair's own repaint noise reaches
+    color_info.update(background_delta_e_before=_r(de_before), background_delta_e_after=_r(de_after),
+                      background_delta_e_p95=_r(de_p95))
 
     # ---- 5. final mask ------------------------------------------------------
     hard, mode = finalize_mask(core, user, mode, valid, expand_px)
@@ -244,14 +273,19 @@ def fix_pair(source: torch.Tensor, edited: torch.Tensor, user_mask: torch.Tensor
     if s.motion_model != "none":
         if not reg.info.get("reliable", True):
             conf *= 0.6
-        if res is not None and res > 0.5:
+        # The residual is reported in source pixels but measured on the registration working copy,
+        # so it is judged in working pixels: 0.4 px left on a 16 MP frame is a quarter of that there
+        # and is neither visible nor measurable more finely.
+        res_work = None if res is None else res / max(1.0, max(h, w) / float(WORK_LONG))
+        if res_work is not None and res_work > 0.5:
             conf *= 0.6
             warnings.append(f"residual shift on the background is {res:.2f} px")
-        elif res is not None and res > 0.3:
+        elif res_work is not None and res_work > 0.3:
             conf *= 0.85
     if ring_p95 is not None and mode != "whole_image":
-        # judged against this pair's own background noise, not an absolute number
-        if ring_p95 > max(6.0, 4.0 * de_after):
+        # judged against this pair's own background noise, not an absolute number: its mean, and how
+        # far its tail reaches (models that re-render the frame at 4+ MP repaint foliage and hair hard)
+        if ring_p95 > max(6.0, 4.0 * de_after, 1.5 * (de_p95 or 0.0)):
             conf *= 0.7
             warnings.append(f"the edit differs from the source right next to the mask (dE p95 {ring_p95:.1f}): "
                             "the mask may be too tight - raise mask_expand or sensitivity")
@@ -280,10 +314,10 @@ def fix_batch(source: torch.Tensor, edited: torch.Tensor, edit_mask: torch.Tenso
               device: torch.device | str = "cpu", progress=None):
     """source [B,H,W,C], edited [N,He,We,C], edit_mask [M,h,w] | None.
 
-    One source may serve several edits and vice versa (shorter batches repeat their last item).
-    Returns (image [K,H,W,3], mask [K,H,W], aligned [K,H,W,3], report json str)."""
+    One source may serve several edits or several masks and vice versa (shorter batches repeat
+    their last item). Returns (image [K,H,W,3], mask [K,H,W], aligned [K,H,W,3], report json str)."""
     source, edited, edit_mask = to_rgb01(source), to_rgb01(edited), mask_bhw(edit_mask)
-    n = max(source.shape[0], edited.shape[0])
+    n = max(source.shape[0], edited.shape[0], 0 if edit_mask is None else edit_mask.shape[0])
     images, masks, aligned, reports = [], [], [], []
     for i in range(n):
         src = source[min(i, source.shape[0] - 1)]

@@ -1,6 +1,7 @@
 """ComfyUI nodes: thin wrappers around the edit_drift_fix core."""
 from __future__ import annotations
 
+import gc
 import json
 
 import torch
@@ -27,21 +28,70 @@ def _device():
 
 def _progress(total):
     try:
+        import comfy.model_management as mm
         import comfy.utils
         bar = comfy.utils.ProgressBar(total)
-        return lambda done, n: bar.update_absolute(done, n)
     except Exception:
         return None
 
+    def step(done, n):
+        bar.update_absolute(done, n)
+        mm.throw_exception_if_processing_interrupted()      # the Cancel button works between batch items
+    return step
 
-def _run(fn):
-    """Run on the GPU; fall back to the CPU if memory runs out."""
+
+_OOM = getattr(torch, "OutOfMemoryError", torch.cuda.OutOfMemoryError)
+
+
+def _is_oom(e: BaseException) -> bool:
+    """Out of memory in any of its disguises (cuBLAS / cuSOLVER / MPS raise a plain RuntimeError)."""
+    if isinstance(e, _OOM):
+        return True
+    msg = str(e).lower()
+    return isinstance(e, RuntimeError) and ("out of memory" in msg or "alloc_failed" in msg)
+
+
+def _need_bytes(*images) -> int:
+    """Upper estimate of the core's peak working memory for one pair of these [B,H,W,C] batches.
+
+    Measured peak is ~95 bytes per input pixel (3.1 GB for a 16 MP source with a 16 MP edit)."""
+    px = sum(int(t.shape[-3]) * int(t.shape[-2]) for t in images if t is not None)
+    return 150 * px + (256 << 20)
+
+
+def _run(fn, *images):
+    """Run on the GPU, fall back to the CPU if memory runs out.
+
+    The editing model usually still fills the card when this node starts (MiniMax H3 Image takes
+    ~21 GB), so ComfyUI is first asked to make room for the estimated need. If memory runs out
+    anyway, the loaded models are unloaded and the GPU is tried once more before the CPU."""
     dev = _device()
-    try:
+    if getattr(dev, "type", "cpu") == "cpu":
         return fn(dev)
-    except torch.OutOfMemoryError:
+    try:
+        import comfy.model_management as mm
+    except Exception:
+        mm = None
+    if mm is not None:
+        try:
+            mm.free_memory(_need_bytes(*images), dev)
+        except Exception:
+            pass
+    for last in (False, True):
+        try:
+            return fn(dev)
+        except Exception as e:
+            if not _is_oom(e):
+                raise
+        # outside the handler now: its traceback kept the tensors of the failed attempt alive
+        gc.collect()
+        if mm is None or last:
+            break
+        mm.unload_all_models()
+        mm.soft_empty_cache()
+    if getattr(dev, "type", "") == "cuda":
         torch.cuda.empty_cache()
-        return fn(torch.device("cpu"))
+    return fn(torch.device("cpu"))
 
 
 def _chw(img: torch.Tensor, i: int, dev) -> torch.Tensor:
@@ -59,8 +109,11 @@ def _hwc(x: torch.Tensor) -> torch.Tensor:
     return x[0].permute(1, 2, 0).cpu()
 
 
-def _pairs(*batched):
-    return max(b.shape[0] for b in batched if b is not None)
+def _pairs(*images, mask=None):
+    """Number of outputs: the longest batch among the images and the mask (shorter ones repeat their last item)."""
+    n = max(b.shape[0] for b in images if b is not None)
+    mask = mask_bhw(mask)
+    return n if mask is None else max(n, mask.shape[0])
 
 
 # ============================================================================
@@ -132,8 +185,9 @@ class EditDriftFix:
         settings = settings_from(preset, options, mask_mode=mask_mode, sensitivity=sensitivity, minor_filter=minor_filter,
                                  mask_expand=mask_expand,
                                  feather=feather, color_fix=color_fix, grain_match=grain_match)
-        prog = _progress(max(source.shape[0], edited.shape[0]))
-        image, mask, aligned, report = _run(lambda dev: fix_batch(source, edited, edit_mask, settings, dev, prog))
+        prog = _progress(_pairs(source, edited, mask=edit_mask))
+        image, mask, aligned, report = _run(lambda dev: fix_batch(source, edited, edit_mask, settings, dev, prog),
+                                            source, edited)
         return {"ui": {"text": [_summary(report)]}, "result": (image, mask, aligned, report)}
 
 
@@ -146,7 +200,7 @@ def _summary(report_json: str) -> str:
         for r in items:
             reg, m = r.get("registration", {}), r.get("mask", {})
             area = m.get("final_area_fraction", m.get("area_fraction", 0)) or 0
-            line = (f"{reg.get('model')} · drift {reg.get('max_displacement_px', 0)} px · "
+            line = (f"{reg.get('model')} · drift {reg.get('max_displacement_px') or 0} px · "
                     f"mask {100 * area:.1f}% · conf {r.get('confidence')}")
             if m.get("global_edit"):
                 line += " · GLOBAL EDIT"
@@ -185,7 +239,10 @@ class EditDriftFixOptions:
                                            "tooltip": "Share of the frame (%) from which the edit counts as global."}),
             "min_region": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 5.0, "step": 0.01,
                                      "tooltip": "Ignore changed spots smaller than this share of the frame (%)."}),
-            "seed": ("INT", {"default": 0, "min": 0, "max": 2**31 - 1, "tooltip": "Noise seed for grain matching."}),
+            # control_after_generate off: the frontend would otherwise randomise any input called "seed"
+            # on every queue, and the pasted grain would change from run to run
+            "seed": ("INT", {"default": 0, "min": 0, "max": 2**31 - 1, "control_after_generate": False,
+                             "tooltip": "Noise seed for grain matching. The same seed gives the same grain."}),
         }}
 
     RETURN_TYPES = ("EDF_OPTIONS",)
@@ -219,7 +276,7 @@ class EditDriftAlign:
     def run(self, source, edited, motion_model, max_shift, exclude_mask=None):
         def go(dev):
             imgs, valids, infos = [], [], []
-            for i in range(_pairs(source, edited)):
+            for i in range(_pairs(source, edited, mask=exclude_mask)):
                 s, e = srgb_to_linear(_chw(source, i, dev)), srgb_to_linear(_chw(edited, i, dev))
                 hw = s.shape[-2:]
                 reg = register(s, e, exclude=_m(exclude_mask, i, dev, hw), model=motion_model, max_shift_pct=max_shift)
@@ -232,7 +289,7 @@ class EditDriftAlign:
                 infos.append({"model": reg.model, "matrix_source_to_edited": reg.matrix.tolist(), **reg.info})
             return torch.stack(imgs), torch.stack(valids), json.dumps(infos[0] if len(infos) == 1 else infos, indent=2)
         with torch.no_grad():
-            return _run(go)
+            return _run(go, source, edited)
 
 
 class EditDriftColor:
@@ -253,7 +310,7 @@ class EditDriftColor:
     def run(self, source, aligned, mode, strength, edit_mask=None):
         def go(dev):
             out = []
-            for i in range(_pairs(source, aligned)):
+            for i in range(_pairs(source, aligned, mask=edit_mask)):
                 s, e = srgb_to_linear(_chw(source, i, dev)), srgb_to_linear(_same_size(_chw(aligned, i, dev), _chw(source, i, dev)))
                 m = _m(edit_mask, i, dev, s.shape[-2:])
                 bg = torch.ones(1, 1, *s.shape[-2:], device=dev)
@@ -263,7 +320,7 @@ class EditDriftColor:
                 out.append(_hwc(linear_to_srgb(c)))
             return (torch.stack(out),)
         with torch.no_grad():
-            return _run(go)
+            return _run(go, source, aligned)
 
 
 class EditDriftMask:
@@ -294,7 +351,7 @@ class EditDriftMask:
                 out.append(dilate(core, round(diag_px(*s.shape[-2:], mask_expand)))[0, 0].cpu())
             return (torch.stack(out),)
         with torch.no_grad():
-            return _run(go)
+            return _run(go, source, aligned)
 
 
 class EditDriftComposite:
@@ -319,7 +376,7 @@ class EditDriftComposite:
     def run(self, source, aligned, mask, feather, blend_mode, grain_match, edit_opacity=1.0):
         def go(dev):
             imgs, alphas = [], []
-            for i in range(_pairs(source, aligned)):
+            for i in range(_pairs(source, aligned, mask=mask)):
                 src = _chw(source, i, dev)
                 s, e = srgb_to_linear(src), srgb_to_linear(_same_size(_chw(aligned, i, dev), src))
                 m = _m(mask, i, dev, s.shape[-2:])
@@ -336,7 +393,7 @@ class EditDriftComposite:
                 alphas.append(alpha[0, 0].cpu())
             return torch.stack(imgs), torch.stack(alphas)
         with torch.no_grad():
-            return _run(go)
+            return _run(go, source, aligned)
 
 
 def _same_size(img: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:

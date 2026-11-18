@@ -2,7 +2,7 @@
 
 Helps you work with generative AI without introducing unwanted changes to the original image.
 
-Editing models (Qwen-Image-Edit, FLUX Kontext, FLUX.2 Klein, GPT-Image, Nano Banana) return a whole new picture. Even when you ask for one small change, the frame comes back slightly zoomed and shifted, the colours move, and fine detail is redrawn everywhere. Edit Drift Fix takes the original and the edit and returns the original with only the real change pasted in.
+Editing models (Qwen-Image-Edit, FLUX Kontext, FLUX.2 Klein, MiniMax H3 Image, GPT-Image, Nano Banana) return a whole new picture. Even when you ask for one small change, the frame comes back slightly zoomed and shifted, the colours move, and fine detail is redrawn everywhere. Edit Drift Fix takes the original and the edit and returns the original with only the real change pasted in.
 
 One edit rarely looks broken. The damage shows when you keep editing, because every pass redraws the whole picture again. Below, the same ten prompts were applied twice: once feeding each model output into the next edit, and once with Edit Drift Fix after every edit.
 
@@ -34,7 +34,7 @@ The bottom row shows the difference from the original, amplified 6 times. The ra
 4. Pastes the change with an inward feather, Laplacian-pyramid blending and grain matching.
 5. Leaves everything else alone. Outside the mask the output pixels are identical to the original.
 
-The node works on image pairs only. It needs no latents, no sampler and no extra models. A 2 MP pair takes about a second on a GPU.
+The node works on image pairs only. It needs no latents, no sampler and no extra models. A 2 MP pair takes about a second on a GPU, a 16 MP pair about two seconds and 3 GB of VRAM. Before it starts, the node asks ComfyUI to free that much memory, so it can run right after the editing model in the same graph.
 
 ## Install
 
@@ -66,7 +66,7 @@ A ready graph is in [`example_workflows/edit_drift_fix_basic.json`](example_work
 | `full_image` | the whole frame changed (style, relight). Geometry is aligned, nothing is pasted |
 | `custom` | your own values |
 
-Picking a preset fills the fields of the node. Changing any field by hand switches the preset to `custom`.
+Picking a preset fills the fields of the node. Changing any field by hand switches the preset to `custom`. While a preset is selected it decides these fields, so a value that arrives through a link or an API prompt is not used, and the report says so. Switch to `custom` to drive the fields from outside.
 
 ## Settings
 
@@ -106,6 +106,23 @@ If the automatic mask covers more than 40% of the frame, the edit is treated as 
 | `report` | JSON with the measurements |
 
 After a run the node shows a one-line summary: motion model, drift in pixels, mask area and confidence. The report also contains the residual shift on the background, the colour difference before and after correction, the number of dropped side regions, and warnings, for example when the mask looks too tight.
+
+## MiniMax H3 Image and other high-resolution models
+
+MiniMax H3 Image renders at 4 to 20 MP, so a workflow upscales the input before the model sees it. On every edit the model also zooms the frame in by about 0.7% and shifts it by a few pixels. Edit Drift Fix measures this and undoes it.
+
+![Recolouring a cup with MiniMax H3 Image at 4 MP](docs/example_h3.jpg)
+
+What you connect to `source` decides the size of the result:
+
+| `source` | Result |
+|---|---|
+| the upscaled picture that goes into the model | keeps the model resolution. Inside the mask you get the model's render, outside it the upscaled original |
+| the original file | has the size of the original. The edit is scaled down once, with anti-aliasing |
+
+A ready graph is in [`example_workflows/edit_drift_fix_minimax_h3_image.json`](example_workflows/edit_drift_fix_minimax_h3_image.json). It uses the first option.
+
+The model repaints fine texture such as foliage, hair and brick more strongly than 1 MP models do. If a repainted patch next to the edit still gets into the mask, raise `minor_filter`, or connect a rough `edit_mask` and switch `mask_mode` to `auto_inside_mask`.
 
 ## Other nodes
 

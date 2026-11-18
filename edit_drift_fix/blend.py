@@ -96,8 +96,11 @@ def multiband_blend(src_lin: torch.Tensor, edt_lin: torch.Tensor, alpha: torch.T
         up = _up(gauss[lvl + 1], size)
         lap_s, lap_e = cur[:, 0:3] - up[:, 0:3], cur[:, 3:6] - up[:, 3:6]
         out = _up(out, size) + torch.lerp(lap_s, lap_e, cur[:, 6:7])
+    # The coarse bands carry edit colour right up to the mask boundary, while the pixel just outside
+    # is pure source. Fade the outer part of the ramp back to the source so the edge has no step.
+    edge = (4.0 * a0 / a0.max().clamp_min(1e-6)).clamp(0.0, 1.0)
     res = src_lin.clone()
-    res[..., y0:y1, x0:x1] = out
+    res[..., y0:y1, x0:x1] = torch.lerp(src_lin[..., y0:y1, x0:x1], out, edge)
     return res
 
 
