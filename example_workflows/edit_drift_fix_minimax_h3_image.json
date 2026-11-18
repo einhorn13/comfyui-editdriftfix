@@ -1,0 +1,195 @@
+{
+  "last_node_id": 18,
+  "last_link_id": 23,
+  "nodes": [
+    {
+      "id": 1, "type": "LoadImage", "pos": [40, 60], "size": [320, 330], "flags": {}, "order": 0, "mode": 0,
+      "title": "Original",
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [1], "slot_index": 0},
+        {"name": "MASK", "type": "MASK", "links": null}
+      ],
+      "properties": {"Node name for S&R": "LoadImage"},
+      "widgets_values": ["original.png", "image"]
+    },
+    {
+      "id": 2, "type": "ResizeImageMaskNode", "pos": [40, 440], "size": [320, 110], "flags": {}, "order": 1, "mode": 0,
+      "title": "Upscale to 4 MP (the model needs 4-20 MP)",
+      "inputs": [{"name": "input", "type": "IMAGE,MASK", "link": 1}],
+      "outputs": [{"name": "resized", "type": "IMAGE", "links": [2], "slot_index": 0}],
+      "properties": {"Node name for S&R": "ResizeImageMaskNode"},
+      "widgets_values": ["scale total pixels", 4, "lanczos"]
+    },
+    {
+      "id": 3, "type": "ResizeImageMaskNode", "pos": [40, 600], "size": [320, 110], "flags": {}, "order": 2, "mode": 0,
+      "title": "Sides to a multiple of 32",
+      "inputs": [{"name": "input", "type": "IMAGE,MASK", "link": 2}],
+      "outputs": [{"name": "resized", "type": "IMAGE", "links": [3, 4, 5], "slot_index": 0}],
+      "properties": {"Node name for S&R": "ResizeImageMaskNode"},
+      "widgets_values": ["scale to multiple", 32, "lanczos"]
+    },
+    {
+      "id": 4, "type": "GetImageSize", "pos": [40, 760], "size": [320, 70], "flags": {}, "order": 6, "mode": 0,
+      "inputs": [{"name": "image", "type": "IMAGE", "link": 3}],
+      "outputs": [
+        {"name": "width", "type": "INT", "links": [8], "slot_index": 0},
+        {"name": "height", "type": "INT", "links": [9], "slot_index": 1},
+        {"name": "batch_size", "type": "INT", "links": null}
+      ],
+      "properties": {"Node name for S&R": "GetImageSize"},
+      "widgets_values": []
+    },
+    {
+      "id": 5, "type": "UNETLoader", "pos": [420, 60], "size": [380, 90], "flags": {}, "order": 3, "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "MODEL", "type": "MODEL", "links": [11], "slot_index": 0}],
+      "properties": {"Node name for S&R": "UNETLoader"},
+      "widgets_values": ["minimax_h3_image_pruned_int8_convrot.safetensors", "default"]
+    },
+    {
+      "id": 6, "type": "CLIPLoader", "pos": [420, 200], "size": [380, 110], "flags": {}, "order": 4, "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "CLIP", "type": "CLIP", "links": [6], "slot_index": 0}],
+      "properties": {"Node name for S&R": "CLIPLoader"},
+      "widgets_values": ["qwen3vl_32b_minimax_h3_int8_convrot.safetensors", "minimax", "default"]
+    },
+    {
+      "id": 7, "type": "VAELoader", "pos": [420, 360], "size": [380, 60], "flags": {}, "order": 5, "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "VAE", "type": "VAE", "links": [7, 16], "slot_index": 0}],
+      "properties": {"Node name for S&R": "VAELoader"},
+      "widgets_values": ["minimax_h3_image_vae_fp16.safetensors"]
+    },
+    {
+      "id": 8, "type": "MiniMaxH3ImageConditioning", "pos": [420, 480], "size": [380, 350], "flags": {}, "order": 7, "mode": 0,
+      "title": "Edit prompt",
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 6},
+        {"name": "vae", "type": "VAE", "link": 7, "shape": 7},
+        {"name": "images.image_1", "type": "IMAGE", "link": 4, "shape": 7},
+        {"name": "images.image_2", "type": "IMAGE", "link": null, "shape": 7},
+        {"name": "width", "type": "INT", "widget": {"name": "width"}, "link": 8},
+        {"name": "height", "type": "INT", "widget": {"name": "height"}, "link": 9}
+      ],
+      "outputs": [
+        {"name": "positive", "type": "CONDITIONING", "links": [10, 12], "slot_index": 0},
+        {"name": "LATENT", "type": "LATENT", "links": [14], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "MiniMaxH3ImageConditioning"},
+      "widgets_values": ["The whole scene of <Picture 1>, with its framing, light and every object in it, is <Subject 1>. The coat worn by the woman in <Picture 1> is <Subject 2>. The target image shows the same scene with the same framing, where the woman now wears a red leather jacket. <Subject 2> is changed to a fitted crimson leather jacket with a stand collar and a metal zipper. <Subject 1> is fully preserved.", 0, 0]
+    },
+    {
+      "id": 9, "type": "ConditioningZeroOut", "pos": [860, 60], "size": [240, 30], "flags": {}, "order": 8, "mode": 0,
+      "inputs": [{"name": "conditioning", "type": "CONDITIONING", "link": 10}],
+      "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [13], "slot_index": 0}],
+      "properties": {"Node name for S&R": "ConditioningZeroOut"},
+      "widgets_values": []
+    },
+    {
+      "id": 10, "type": "KSampler", "pos": [860, 140], "size": [300, 270], "flags": {}, "order": 9, "mode": 0,
+      "inputs": [
+        {"name": "model", "type": "MODEL", "link": 11},
+        {"name": "positive", "type": "CONDITIONING", "link": 12},
+        {"name": "negative", "type": "CONDITIONING", "link": 13},
+        {"name": "latent_image", "type": "LATENT", "link": 14}
+      ],
+      "outputs": [{"name": "LATENT", "type": "LATENT", "links": [15], "slot_index": 0}],
+      "properties": {"Node name for S&R": "KSampler"},
+      "widgets_values": [1, "fixed", 6, 1, "euler", "simple", 1]
+    },
+    {
+      "id": 11, "type": "VAEDecode", "pos": [860, 460], "size": [300, 50], "flags": {}, "order": 10, "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 15},
+        {"name": "vae", "type": "VAE", "link": 16}
+      ],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [17, 23], "slot_index": 0}],
+      "properties": {"Node name for S&R": "VAEDecode"},
+      "widgets_values": []
+    },
+    {
+      "id": 12, "type": "EditDriftFix", "pos": [1220, 60], "size": [340, 350], "flags": {}, "order": 11, "mode": 0,
+      "inputs": [
+        {"name": "source", "type": "IMAGE", "link": 5},
+        {"name": "edited", "type": "IMAGE", "link": 17},
+        {"name": "edit_mask", "type": "MASK", "link": null, "shape": 7},
+        {"name": "options", "type": "EDF_OPTIONS", "link": null, "shape": 7}
+      ],
+      "outputs": [
+        {"name": "image", "type": "IMAGE", "links": [18], "slot_index": 0},
+        {"name": "mask", "type": "MASK", "links": [21], "slot_index": 1},
+        {"name": "aligned_edited", "type": "IMAGE", "links": null},
+        {"name": "report", "type": "STRING", "links": null}
+      ],
+      "properties": {"Node name for S&R": "EditDriftFix"},
+      "widgets_values": ["object_edit", "auto", 1.2, 0.5, 1.2, 1.0, "global_plus_local", 0.5]
+    },
+    {
+      "id": 13, "type": "SaveImage", "pos": [1620, 60], "size": [460, 400], "flags": {}, "order": 12, "mode": 0,
+      "title": "Result",
+      "inputs": [{"name": "images", "type": "IMAGE", "link": 18}],
+      "outputs": [],
+      "properties": {"Node name for S&R": "SaveImage"},
+      "widgets_values": ["EditDriftFix_H3"]
+    },
+    {
+      "id": 15, "type": "MaskToImage", "pos": [1220, 480], "size": [200, 30], "flags": {}, "order": 13, "mode": 0,
+      "inputs": [{"name": "mask", "type": "MASK", "link": 21}],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [22], "slot_index": 0}],
+      "properties": {"Node name for S&R": "MaskToImage"},
+      "widgets_values": []
+    },
+    {
+      "id": 16, "type": "PreviewImage", "pos": [1220, 560], "size": [340, 280], "flags": {}, "order": 14, "mode": 0,
+      "title": "Paste mask",
+      "inputs": [{"name": "images", "type": "IMAGE", "link": 22}],
+      "outputs": [],
+      "properties": {"Node name for S&R": "PreviewImage"},
+      "widgets_values": []
+    },
+    {
+      "id": 17, "type": "PreviewImage", "pos": [860, 560], "size": [300, 280], "flags": {}, "order": 15, "mode": 0,
+      "title": "Raw model output",
+      "inputs": [{"name": "images", "type": "IMAGE", "link": 23}],
+      "outputs": [],
+      "properties": {"Node name for S&R": "PreviewImage"},
+      "widgets_values": []
+    },
+    {
+      "id": 18, "type": "MarkdownNote", "pos": [40, 880], "size": [760, 190], "flags": {}, "order": 16, "mode": 0,
+      "title": "How this graph works",
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": ["MiniMax H3 Image works at 4-20 MP, so the original is upscaled first. The **upscaled** picture goes both into the model and into `source` of Edit Drift Fix: the result then keeps the model resolution, and every pixel outside the edit is the upscaled original.\n\nTo get the result at the size of the original file instead, connect `Original` straight to `source`.\n\nThe prompt describes the finished picture: bind what you refer to as `<Subject N>` to `<Picture 1>`, say what the target shows, then what is changed and what is preserved."]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "IMAGE"],
+    [2, 2, 0, 3, 0, "IMAGE"],
+    [3, 3, 0, 4, 0, "IMAGE"],
+    [4, 3, 0, 8, 2, "IMAGE"],
+    [5, 3, 0, 12, 0, "IMAGE"],
+    [6, 6, 0, 8, 0, "CLIP"],
+    [7, 7, 0, 8, 1, "VAE"],
+    [8, 4, 0, 8, 4, "INT"],
+    [9, 4, 1, 8, 5, "INT"],
+    [10, 8, 0, 9, 0, "CONDITIONING"],
+    [11, 5, 0, 10, 0, "MODEL"],
+    [12, 8, 0, 10, 1, "CONDITIONING"],
+    [13, 9, 0, 10, 2, "CONDITIONING"],
+    [14, 8, 1, 10, 3, "LATENT"],
+    [15, 10, 0, 11, 0, "LATENT"],
+    [16, 7, 0, 11, 1, "VAE"],
+    [17, 11, 0, 12, 1, "IMAGE"],
+    [18, 12, 0, 13, 0, "IMAGE"],
+    [21, 12, 1, 15, 0, "MASK"],
+    [22, 15, 0, 16, 0, "IMAGE"],
+    [23, 11, 0, 17, 0, "IMAGE"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}
